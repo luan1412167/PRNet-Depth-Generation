@@ -6,7 +6,32 @@ from time import time
 from PIL import Image
 
 from predictor import PosPrediction
+import cv2
+import math
 
+class Detection:
+    def __init__(self):
+        caffemodel = "./Data/detection/Widerface-RetinaFace.caffemodel"
+        deploy = "./Data/detection/deploy.prototxt"
+        self.detector = cv2.dnn.readNetFromCaffe(deploy, caffemodel)
+        self.detector_confidence = 0.95
+
+    def get_bbox(self, img):
+        height, width = img.shape[0], img.shape[1]
+        aspect_ratio = width / height
+        if img.shape[1] * img.shape[0] >= 192 * 192:
+            img = cv2.resize(img,
+                             (int(192 * math.sqrt(aspect_ratio)),
+                              int(192 / math.sqrt(aspect_ratio))), interpolation=cv2.INTER_LINEAR)
+
+        blob = cv2.dnn.blobFromImage(img, 1, mean=(104, 117, 123))
+        self.detector.setInput(blob, 'data')
+        out = self.detector.forward('detection_out').squeeze()
+        max_conf_index = np.argmax(out[:, 2])
+        left, top, right, bottom = out[max_conf_index, 3]*width, out[max_conf_index, 4]*height, \
+                                   out[max_conf_index, 5]*width, out[max_conf_index, 6]*height
+        bbox = [int(left), int(top), int(right-left+1), int(bottom-top+1)]
+        return bbox
 
 class PRN:
     ''' Joint 3D Face Reconstruction and Dense Alignment with Position Map Regression Network
@@ -27,7 +52,7 @@ class PRN:
             detector_path = os.path.join(prefix, 'Data/net-data/mmod_human_face_detector.dat')
             self.face_detector = dlib.cnn_face_detection_model_v1(
                     detector_path)
-
+        self.face_detector = Detection()
         if is_opencv:
             import cv2
 
@@ -70,13 +95,13 @@ class PRN:
                 image = imread(input)
             except IOError:
                 print("error opening file: ", input)
-                return None
+                return None, NOne
         else:
             image = input
 
         if image.ndim < 3:
             image = np.tile(image[:,:,np.newaxis], [1,1,3])
-
+        bbox = []
         if image_info is not None:
             if np.max(image_info.shape) > 4: # key points to get bounding box
                 kpt = image_info
@@ -114,17 +139,21 @@ class PRN:
             center = np.array([right - (right - left) / 2.0, bottom - (bottom - top) / 2.0 + old_size*0.14])
             size = int(old_size*1.58)            
         else:
-            detected_faces = self.dlib_detect(image)
+            # detected_faces = self.dlib_detect(image)
+            detected_faces = self.face_detector.get_bbox(image)
             if len(detected_faces) == 0:
                 print('warning: no detected face')
-                return None
+                return None, None
 
-            d = detected_faces[0].rect ## only use the first detected face (assume that each input image only contains one face)
-            left = d.left(); right = d.right(); top = d.top(); bottom = d.bottom()
+            # d = detected_faces[0].rect ## only use the first detected face (assume that each input image only contains one face)
+            # left = d.left(); right = d.right(); top = d.top(); bottom = d.bottom()
+            left = detected_faces[0]; right = detected_faces[0] + detected_faces[2]; top = detected_faces[1]; bottom = detected_faces[1] + detected_faces[3]
+
             old_size = (right - left + bottom - top)/2
             center = np.array([right - (right - left) / 2.0, bottom - (bottom - top) / 2.0 + old_size*0.14])
             size = int(old_size*1.58)
-            print(left, right, top, bottom)
+            bbox.append([left, top, right, bottom])
+            # print(left, right, top, bottom)
 
         # crop image
         src_pts = np.array([[center[0]-size/2, center[1]-size/2], [center[0] - size/2, center[1]+size/2], [center[0]+size/2, center[1]-size/2]])
@@ -155,7 +184,7 @@ class PRN:
         vertices = np.vstack((vertices[:2,:], z))
         pos = np.reshape(vertices.T, [self.resolution_op, self.resolution_op, 3])
         
-        return pos
+        return pos, bbox
             
     def get_landmarks(self, pos):
         '''
